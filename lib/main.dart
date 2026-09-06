@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() => runApp(const Dz6gApp());
 
@@ -209,17 +211,30 @@ class _FeedScreenState extends State<FeedScreen> {
   Map<int, dynamic> discussionMap = {};
   Map<int, dynamic> userMap = {};
   bool loading = false;
+  String? token;
 
   @override
   void initState() {
     super.initState();
+    _loadToken();
     _loadPosts();
+  }
+
+  Future<void> _loadToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      token = prefs.getString('access_token');
+    });
   }
 
   Future<void> _loadPosts() async {
     setState(() => loading = true);
     try {
-      final response = await http.get(Uri.parse('https://dz6g.ccwu.cc/board/api/posts'));
+      final Map<String, String> headers = token != null ? {'Authorization': 'Bearer $token'} : {};
+      final response = await http.get(
+        Uri.parse('https://dz6g.ccwu.cc/board/api/posts'),
+        headers: headers,
+      );
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final postData = data['data'] as List;
@@ -281,6 +296,24 @@ class _FeedScreenState extends State<FeedScreen> {
         backgroundColor: const Color(0xFF1a1a1a),
         elevation: 0,
         centerTitle: true,
+        actions: [
+          if (token != null)
+            IconButton(
+              icon: const Icon(Icons.login),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginPage()),
+              ),
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.person),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginPage()),
+              ),
+            ),
+        ],
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator(color: Color(0xFFC9A96E)))
@@ -399,6 +432,136 @@ class _StatItem extends StatelessWidget {
   }
 }
 
+// 登录页面
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  bool loading = false;
+
+  Future<void> _loginWithCasdoor() async {
+    setState(() => loading = true);
+    
+    // Casdoor OAuth 授权 URL
+    final clientId = '68cbaa8b0612ec4de274';
+    final redirectUri = 'dz6g-app://callback';
+    
+    final url = Uri.parse('https://dz6g.ccwu.cc/login/oauth/authorize').replace(
+      queryParameters: {
+        'response_type': 'code',
+        'client_id': clientId,
+        'redirect_uri': redirectUri,
+        'state': 'dz6g_app',
+        'scope': 'openid profile',
+      },
+    );
+    
+    setState(() => loading = false);
+    
+    // 尝试打开浏览器
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+      
+      // 显示提示等待用户完成登录
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('登录中...'),
+            content: const Text('请在浏览器中完成登录后返回此应用'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+            ],
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('错误'),
+            content: const Text('无法打开浏览器，请手动访问登录页面'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('确定'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF1a1a1a),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.school, size: 80, color: Color(0xFFC9A96E)),
+              const SizedBox(height: 24),
+              const Text(
+                '校园墙',
+                style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '邓州市第六高级中学',
+                style: TextStyle(color: Colors.grey[400], fontSize: 14),
+              ),
+              const SizedBox(height: 48),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: loading ? null : _loginWithCasdoor,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFC9A96E),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: loading
+                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Casdoor 登录', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    side: BorderSide(color: Colors.grey[600]!),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: const Text('返回'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // 通知页面
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -504,9 +667,7 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('我的')),
-      body: ListView(
-        children: const [_ProfileHeader(), _MenuSection()],
-      ),
+      body: ListView(children: [const _ProfileHeader(), const _MenuSection()]),
     );
   }
 }
@@ -521,21 +682,16 @@ class _ProfileHeader extends StatelessWidget {
       decoration: const BoxDecoration(
         gradient: LinearGradient(colors: [Color(0xFFC9A96E), Color(0xFF8B7355)], begin: Alignment.topLeft, end: Alignment.bottomRight),
       ),
-      child: Row(
+      child: const Row(
         children: [
-          const CircleAvatar(radius: 40, backgroundColor: Colors.white, child: Icon(Icons.person, size: 40, color: Color(0xFFC9A96E))),
-          const SizedBox(width: 16),
-          const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          CircleAvatar(radius: 40, backgroundColor: Colors.white, child: Icon(Icons.person, size: 40, color: Color(0xFFC9A96E))),
+          SizedBox(width: 16),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('未登录', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
             SizedBox(height: 4),
             Text('登录后体验完整功能', style: TextStyle(color: Colors.white70, fontSize: 14)),
           ]),
-          const Spacer(),
-          ElevatedButton(
-            onPressed: () {},
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: const Color(0xFFC9A96E)),
-            child: const Text('登录'),
-          ),
+          Spacer(),
         ],
       ),
     );
