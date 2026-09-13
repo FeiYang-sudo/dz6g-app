@@ -1,23 +1,35 @@
-import 'package:flutter/material.dart';
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
-/// ============================================
-/// 液态玻璃底部导航栏组件
-/// 特性：悬浮胶囊、磨砂玻璃、弹簧物理动画
-/// ============================================
+import 'package:flutter/material.dart';
 
+/// 品牌金色（与官网 dz6g.ccwu.cc 一致）
+const Color kBrandGold = Color(0xFFC9A96E);
+const Color kBrandGoldDark = Color(0xFFA8874F);
+
+/// ==========================================================
+/// 液态玻璃底部导航栏
+///
+/// 关键点（踩过的坑）：
+///   Positioned 必须是 Stack 的直接子节点！
+///   如果把 Positioned 塞进 AnimatedBuilder 的 builder 里返回，
+///   它就丢了父级 Stack 的约束，会跑到屏幕左上角 / 内容区。
+///   正确做法：AnimatedBuilder 包在 Stack 外面，每帧重建整个 Stack。
+/// ==========================================================
 class LiquidGlassNavBar extends StatefulWidget {
   final int currentIndex;
   final ValueChanged<int> onTap;
   final List<NavItem> items;
-  final Locale locale;
+
+  /// 滚动因子 0~1：页面滚动越多，玻璃越"实"（模糊更强、更不透明）
+  final double scrollFactor;
 
   const LiquidGlassNavBar({
     super.key,
     required this.currentIndex,
     required this.onTap,
     required this.items,
-    required this.locale,
+    this.scrollFactor = 0.0,
   });
 
   @override
@@ -26,157 +38,44 @@ class LiquidGlassNavBar extends StatefulWidget {
 
 class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _indicatorAnimation;
-  double _indicatorPosition = 0.0;
-  double _lastIndex = 0.0;
+  static const double _navHeight = 66;
+  static const double _indicatorHeight = 46;
+  static const Duration _duration = Duration(milliseconds: 620);
+
+  late final AnimationController _controller;
+
+  /// 滑块位置（单位 = tab 索引的浮点数，如 1.37 表示在第1、2个 tab 之间）
+  late Animation<double> _positionAnim;
+
+  /// 上一次落定的位置，作为下一次动画的起点
+  double _position = 0;
 
   @override
   void initState() {
     super.initState();
-    _indicatorPosition = widget.currentIndex.toDouble();
-    _lastIndex = widget.currentIndex.toDouble();
-
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-      reverseDuration: const Duration(milliseconds: 400),
-    );
-
-    _indicatorAnimation = CurvedAnimation(
-      parent: _controller,
-      curve: const Interval(0.0, 0.7, curve: Curves.easeOutBack),
-      reverseCurve: const Interval(0.0, 0.6, curve: Curves.elasticOut),
-    );
+    _position = widget.currentIndex.toDouble();
+    _controller = AnimationController(vsync: this, duration: _duration);
+    _positionAnim = AlwaysStoppedAnimation<double>(_position);
   }
 
   @override
-  void didUpdateWidget(LiquidGlassNavBar oldWidget) {
+  void didUpdateWidget(covariant LiquidGlassNavBar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.currentIndex != oldWidget.currentIndex) {
-      _animateToIndex(widget.currentIndex.toDouble());
-    }
-  }
-
-  void _animateToIndex(double newIndex) {
-    _lastIndex = _indicatorPosition;
-    _controller.forward(from: 0.0).then((_) {
-      setState(() {
-        _indicatorPosition = newIndex;
-        _lastIndex = newIndex;
-      });
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(left: 16, right: 16, bottom: 24),
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          _buildGlassBackground(),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: List.generate(widget.items.length, (index) {
-                  return _NavButton(
-                    item: widget.items[index],
-                    isSelected: index == widget.currentIndex,
-                    onTap: () => widget.onTap(index),
-                  );
-                }),
-              ),
-            ),
-          ),
-          _buildIndicator(context),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildGlassBackground() {
-    return Container(
-      margin: const EdgeInsets.only(top: 8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(32),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 20,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(32),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withOpacity(0.8),
-                  Colors.white.withOpacity(0.6),
-                ],
-              ),
-              border: Border.all(
-                color: Colors.white.withOpacity(0.5),
-                width: 0.5,
-              ),
-            ),
-          ),
+      // 以「当前落点」为起点、新索引为终点做弹簧动画
+      _positionAnim = Tween<double>(
+        begin: _position,
+        end: widget.currentIndex.toDouble(),
+      ).animate(
+        CurvedAnimation(
+          parent: _controller,
+          // elasticOut = 冲过头再回弹，就是"松手回弹"的手感
+          curve: Curves.elasticOut,
         ),
-      ),
-    );
-  }
-
-  Widget _buildIndicator(BuildContext context) {
-    final animatedPosition = Tween<double>(
-      begin: _lastIndex,
-      end: _indicatorPosition,
-    ).animate(_indicatorAnimation);
-
-    return Positioned(
-      bottom: 20,
-      left: 0,
-      right: 0,
-      child: AnimatedBuilder(
-        animation: _indicatorAnimation,
-        builder: (context, child) {
-          final position = animatedPosition.value;
-          final screenWidth = MediaQuery.of(context).size.width;
-          final navWidth = screenWidth - 32 - 16;
-          final tabWidth = navWidth / widget.items.length;
-          final leftOffset = position * tabWidth + tabWidth * 0.15;
-          final indicatorWidth = tabWidth * 0.7;
-
-          return Positioned(
-            left: leftOffset,
-            width: indicatorWidth,
-            child: Container(
-              height: 44,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: const Color(0xFFC9A96E),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFFC9A96E).withOpacity(0.4),
-                    blurRadius: 8,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
+      );
+      _position = widget.currentIndex.toDouble();
+      _controller.forward(from: 0.0);
+    }
   }
 
   @override
@@ -184,11 +83,213 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
     _controller.dispose();
     super.dispose();
   }
+
+  @override
+  Widget build(BuildContext context) {
+    final safeBottom = MediaQuery.of(context).padding.bottom;
+
+    // ⚠️ AnimatedBuilder 必须在 Stack 外面：这样每帧重建 Stack，
+    //    里面的 Positioned 始终是 Stack 的直接子节点，定位才有效。
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        return Padding(
+          // 悬浮胶囊：左右留边距 + 底部留白，不撑满屏宽
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            bottom: 14 + safeBottom * 0.4,
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final navWidth = constraints.maxWidth;
+              final tabWidth = navWidth / widget.items.length;
+              final t = _positionAnim.value;
+
+              // ---------- 液态拉伸形变 ----------
+              // progress 是动画原始进度 0→1。
+              // 用 sin(πt) 做"两头收、中间胀"的包络：
+              //   起点 0 → 不拉伸；中段 0.5 → 拉到最大；终点 1 → 回到原始形状。
+              // 这样滑块在飞行途中被拉长，落位时收缩回去，像一滴被甩出的液体。
+              final progress = _controller.value;
+              final stretch = 1 + 0.55 * math.sin(math.pi * progress);
+
+              final baseWidth = tabWidth * 0.66;
+              final indicatorWidth = baseWidth * stretch;
+              // 拉伸时纵向略微压扁，模拟液体体积守恒
+              final indicatorHeight = _indicatorHeight - 9 * (stretch - 1);
+
+              // 滑块中心对齐 tab 中心，所以左右各减半个宽度
+              final center = t * tabWidth + tabWidth / 2;
+              final indicatorLeft = center - indicatorWidth / 2;
+              final indicatorTop = (_navHeight - indicatorHeight) / 2;
+
+              return SizedBox(
+                height: _navHeight,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    // ① 玻璃底板（非 positioned 子节点 → 决定 Stack 尺寸）
+                    _GlassBackdrop(
+                      height: _navHeight,
+                      scrollFactor: widget.scrollFactor,
+                    ),
+
+                    // ② 液态胶囊滑块 —— 放在图标"下面"当高亮底，不挡图标
+                    Positioned(
+                      left: indicatorLeft,
+                      top: indicatorTop,
+                      width: indicatorWidth,
+                      height: indicatorHeight,
+                      child: _LiquidIndicator(stretch: stretch),
+                    ),
+
+                    // ③ 图标 + 文字（最上层，保证点击和可读性）
+                    SizedBox(
+                      height: _navHeight,
+                      child: Row(
+                        children: List.generate(widget.items.length, (i) {
+                          return Expanded(
+                            child: _NavButton(
+                              item: widget.items[i],
+                              isSelected: i == widget.currentIndex,
+                              onTap: () => widget.onTap(i),
+                            ),
+                          );
+                        }),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
 }
 
-/// ============================================
-/// 导航按钮组件
-/// ============================================
+/// ==========================================================
+/// 玻璃底板：BackdropFilter 磨砂 + 半透明渐变 + 边缘高光
+/// ==========================================================
+class _GlassBackdrop extends StatelessWidget {
+  final double height;
+  final double scrollFactor;
+
+  const _GlassBackdrop({required this.height, required this.scrollFactor});
+
+  @override
+  Widget build(BuildContext context) {
+    final f = scrollFactor.clamp(0.0, 1.0);
+
+    // 滚动越多 → 模糊半径越大、白度越高
+    // （页面静止时内容清晰透出，滚动时自动"加密"成实心玻璃）
+    final sigma = 14 + 16 * f;
+    final topOpacity = 0.62 + 0.22 * f;
+    final bottomOpacity = 0.46 + 0.24 * f;
+    final radius = BorderRadius.circular(height / 2);
+
+    return Container(
+      height: height,
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.10),
+            blurRadius: 24,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: radius,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              // 半透明白色渐变 = 玻璃本体
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Colors.white.withOpacity(topOpacity),
+                  Colors.white.withOpacity(bottomOpacity),
+                ],
+              ),
+              // 一圈极细白边 = 玻璃的棱
+              border: Border.all(
+                color: Colors.white.withOpacity(0.85),
+                width: 1,
+              ),
+            ),
+            // 顶部一道横向高光 = 边缘折射感
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: Container(
+                height: 1.5,
+                margin: const EdgeInsets.symmetric(horizontal: 26),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(1),
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.white.withOpacity(0.0),
+                      Colors.white.withOpacity(0.95),
+                      Colors.white.withOpacity(0.0),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// ==========================================================
+/// 液态胶囊滑块
+/// ==========================================================
+class _LiquidIndicator extends StatelessWidget {
+  final double stretch;
+
+  const _LiquidIndicator({required this.stretch});
+
+  @override
+  Widget build(BuildContext context) {
+    // 圆角跟着拉伸量一起变，保持"水滴"轮廓而不是生硬矩形平移
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24 * stretch),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            kBrandGold.withOpacity(0.30),
+            kBrandGold.withOpacity(0.14),
+          ],
+        ),
+        border: Border.all(
+          color: kBrandGold.withOpacity(0.38),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: kBrandGold.withOpacity(0.26),
+            blurRadius: 14,
+            spreadRadius: -2,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// ==========================================================
+/// 单个 tab：图标 + 文字 + 点击内发光反馈
+/// ==========================================================
 class _NavButton extends StatefulWidget {
   final NavItem item;
   final bool isSelected;
@@ -206,134 +307,124 @@ class _NavButton extends StatefulWidget {
 
 class _NavButtonState extends State<_NavButton>
     with SingleTickerProviderStateMixin {
-  late AnimationController _tapController;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _glowAnimation;
+  late final AnimationController _tap;
+  late final Animation<double> _scale;
+  late final Animation<double> _glow;
 
   @override
   void initState() {
     super.initState();
-    _tapController = AnimationController(
+    _tap = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 150),
-      reverseDuration: const Duration(milliseconds: 200),
+      duration: const Duration(milliseconds: 120),
+      reverseDuration: const Duration(milliseconds: 240),
     );
-
-    _scaleAnimation = Tween<double>(begin: 1.0, end: 0.9).animate(
-      CurvedAnimation(parent: _tapController, curve: Curves.easeInOut),
+    // 按下缩小到 86%，松手弹回
+    _scale = Tween<double>(begin: 1.0, end: 0.86).animate(
+      CurvedAnimation(parent: _tap, curve: Curves.easeOut),
     );
-
-    _glowAnimation = Tween<double>(begin: 0.0, end: 0.4).animate(
-      CurvedAnimation(parent: _tapController, curve: Curves.easeInOut),
+    // 点击时的内发光强度 0→1
+    _glow = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _tap, curve: Curves.easeOut),
     );
   }
 
   @override
-  void didUpdateWidget(_NavButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isSelected != oldWidget.isSelected) {
-      if (widget.isSelected) {
-        _tapController.forward();
-      } else {
-        _tapController.reverse();
-      }
-    }
+  void dispose() {
+    _tap.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final color = widget.isSelected
-        ? const Color(0xFFC9A96E)
-        : Colors.grey[600]!;
+    final selected = widget.isSelected;
+    final color = selected ? kBrandGoldDark : const Color(0xFF8C8C8C);
 
     return GestureDetector(
-      onTapDown: (_) => _tapController.forward(),
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => _tap.forward(),
       onTapUp: (_) {
-        _tapController.reverse();
+        _tap.reverse();
         widget.onTap();
       },
-      onTapCancel: () => _tapController.reverse(),
+      onTapCancel: () => _tap.reverse(),
       child: AnimatedBuilder(
-        animation: _tapController,
-        builder: (context, child) {
+        animation: _tap,
+        builder: (context, _) {
+          final g = _glow.value;
           return Transform.scale(
-            scale: _scaleAnimation.value,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  widget.item.icon,
-                  color: color,
-                  size: 26,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  widget.item.label,
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 10,
-                    fontWeight: widget.isSelected
-                        ? FontWeight.bold
-                        : FontWeight.normal,
+            scale: _scale.value,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                // 点击内发光：按下时图标周围浮起一圈金色柔光
+                boxShadow: g <= 0.01
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: kBrandGold.withOpacity(0.45 * g),
+                          blurRadius: 18,
+                          spreadRadius: 1,
+                        ),
+                      ],
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(widget.item.icon, size: 23, color: color),
+                  const SizedBox(height: 2),
+                  Text(
+                    widget.item.label,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      height: 1.1,
+                      color: color,
+                      fontWeight:
+                          selected ? FontWeight.w600 : FontWeight.w400,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           );
         },
       ),
     );
   }
-
-  @override
-  void dispose() {
-    _tapController.dispose();
-    super.dispose();
-  }
 }
 
-/// ============================================
 /// 导航项数据模型
-/// ============================================
 class NavItem {
   final String label;
   final IconData icon;
 
-  const NavItem({
-    required this.label,
-    required this.icon,
-  });
+  const NavItem({required this.label, required this.icon});
 }
 
-/// ============================================
-/// 国际化字符串
-/// ============================================
+/// ==========================================================
+/// 国际化字符串（中 / 英）
+/// ==========================================================
 class AppLocalization {
   final Locale locale;
 
   AppLocalization(this.locale);
 
-  static AppLocalization of(BuildContext context) {
-    return Localizations.of<AppLocalization>(context, AppLocalization)!;
-  }
+  String get languageCode => locale.languageCode;
+  bool get isZh => locale.languageCode == 'zh';
 
-  String get home => locale.languageCode == 'en' ? 'Home' : '首页';
-  String get feed => locale.languageCode == 'en' ? 'Feed' : '动态';
-  String get post => locale.languageCode == 'en' ? 'Post' : '发布';
-  String get profile => locale.languageCode == 'en' ? 'Profile' : '我的';
-  String get title => locale.languageCode == 'en' ? 'Campus Wall' : '校园墙';
-  String get school => locale.languageCode == 'en' 
-      ? 'Dengzhou No.6 High School' 
-      : '邓州市第六高级中学';
-  String get postTitle => locale.languageCode == 'en' ? 'Post Title' : '帖子标题';
-  String get postContent => locale.languageCode == 'en' 
-      ? 'This is the post content...' 
-      : '这是帖子的内容...';
+  String get home => isZh ? '首页' : 'Home';
+  String get feed => isZh ? '动态' : 'Feed';
+  String get post => isZh ? '发布' : 'Post';
+  String get profile => isZh ? '我的' : 'Me';
+  String get title => isZh ? '校园墙' : 'Campus Wall';
+  String get school =>
+      isZh ? '邓州市第六高级中学' : 'Dengzhou No.6 High School';
+  String get postTitle => isZh ? '帖子标题' : 'Post';
+  String get postContent => isZh ? '这是帖子的内容...' : 'Post content...';
+  String get emptyHint => isZh ? '这个页面还在做' : 'Coming soon';
 }
 
-/// ============================================
-/// 本地化委托
-/// ============================================
+/// 本地化委托：把 AppLocalization 注入到 MaterialApp
 class AppLocalizationDelegate extends LocalizationsDelegate<AppLocalization> {
   const AppLocalizationDelegate();
 
@@ -341,17 +432,17 @@ class AppLocalizationDelegate extends LocalizationsDelegate<AppLocalization> {
   bool isSupported(Locale locale) => ['en', 'zh'].contains(locale.languageCode);
 
   @override
-  Future<AppLocalization> load(Locale locale) async {
-    return AppLocalization(locale);
-  }
+  Future<AppLocalization> load(Locale locale) async =>
+      AppLocalization(locale);
 
   @override
   bool shouldReload(AppLocalizationDelegate old) => false;
 }
 
-/// ============================================
-/// 主页面示例
-/// ============================================
+// ==========================================================
+// 以下是演示页面（接入真实 Flarum 数据时替换即可）
+// ==========================================================
+
 class GlassNavDemoPage extends StatefulWidget {
   const GlassNavDemoPage({super.key});
 
@@ -360,125 +451,261 @@ class GlassNavDemoPage extends StatefulWidget {
 }
 
 class _GlassNavDemoPageState extends State<GlassNavDemoPage> {
+  final ScrollController _scroll = ScrollController();
   int _currentIndex = 0;
   Locale _locale = const Locale('zh', 'CN');
 
-  late final List<NavItem> _items;
+  /// 0~1，传给导航栏控制玻璃的模糊强度与透明度
+  double _scrollFactor = 0;
 
   @override
   void initState() {
     super.initState();
-    _updateItems();
+    _scroll.addListener(_onScroll);
   }
 
-  void _updateItems() {
+  /// 监听滚动位置 → 换算成 0~1 的因子（滚过 160px 达到最"实"）
+  void _onScroll() {
+    final f = (_scroll.offset / 160).clamp(0.0, 1.0);
+    // 变化很小就不刷新，省性能
+    if ((f - _scrollFactor).abs() > 0.02) {
+      setState(() => _scrollFactor = f);
+    }
+  }
+
+  @override
+  void dispose() {
+    _scroll.removeListener(_onScroll);
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  List<NavItem> get _items {
     final loc = AppLocalization(_locale);
-    _items = [
-      NavItem(label: loc.home, icon: Icons.home),
-      NavItem(label: loc.feed, icon: Icons.explore),
-      NavItem(label: loc.post, icon: Icons.add_circle),
-      NavItem(label: loc.profile, icon: Icons.person),
+    return [
+      NavItem(label: loc.home, icon: Icons.home_rounded),
+      NavItem(label: loc.feed, icon: Icons.explore_rounded),
+      NavItem(label: loc.post, icon: Icons.add_circle_outline_rounded),
+      NavItem(label: loc.profile, icon: Icons.person_rounded),
     ];
   }
 
   void _toggleLanguage() {
     setState(() {
-      _locale = _locale.languageCode == 'zh' 
-          ? const Locale('en', 'US') 
+      _locale = _locale.languageCode == 'zh'
+          ? const Locale('en', 'US')
           : const Locale('zh', 'CN');
-      _updateItems();
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final loc = AppLocalization(_locale);
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor: const Color(0xFFF3F3F5),
       body: Stack(
         children: [
-          _buildPageContent(),
+          _buildBody(loc),
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
             child: LiquidGlassNavBar(
               currentIndex: _currentIndex,
-              onTap: (index) => setState(() => _currentIndex = index),
+              onTap: (i) => setState(() => _currentIndex = i),
               items: _items,
-              locale: _locale,
+              scrollFactor: _scrollFactor,
             ),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _toggleLanguage,
-        backgroundColor: const Color(0xFFC9A96E),
-        child: Text(
-          _locale.languageCode == 'zh' ? 'EN' : '中文',
-          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-        ),
-      ),
     );
   }
 
-  Widget _buildPageContent() {
-    final loc = AppLocalization(_locale);
-    
+  Widget _buildBody(AppLocalization loc) {
+    if (_currentIndex != 0) {
+      return _PlaceholderPage(
+        icon: _items[_currentIndex].icon,
+        label: _items[_currentIndex].label,
+        hint: loc.emptyHint,
+      );
+    }
+
     return CustomScrollView(
+      controller: _scroll,
       slivers: [
         SliverToBoxAdapter(
-          child: Container(
-            height: 200,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFFC9A96E), Color(0xFFa08050)],
-              ),
-            ),
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.school, size: 60, color: Colors.white),
-                  const SizedBox(height: 12),
-                  Text(
-                    loc.title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    loc.school,
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          child: _Header(loc: loc, onToggleLanguage: _toggleLanguage),
         ),
         SliverPadding(
-          padding: const EdgeInsets.all(16),
+          // 底部留出 130px，避免内容被悬浮导航栏压住
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 130),
           sliver: SliverList(
             delegate: SliverChildBuilderDelegate(
-              (context, index) {
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  child: ListTile(
-                    title: Text('${loc.postTitle} $index'),
-                    subtitle: Text(loc.postContent),
-                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                  ),
-                );
-              },
+              (context, index) => _PostCard(loc: loc, index: index),
               childCount: 10,
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+/// 顶部金色头部 + 中英文切换按钮
+class _Header extends StatelessWidget {
+  final AppLocalization loc;
+  final VoidCallback onToggleLanguage;
+
+  const _Header({required this.loc, required this.onToggleLanguage});
+
+  @override
+  Widget build(BuildContext context) {
+    final topInset = MediaQuery.of(context).padding.top;
+
+    return Container(
+      padding: EdgeInsets.fromLTRB(20, topInset + 12, 16, 26),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFDCC08C), kBrandGold, kBrandGoldDark],
+        ),
+        borderRadius: BorderRadius.vertical(bottom: Radius.circular(28)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Spacer(),
+              // 语言切换放在顶部，不再用悬浮按钮遮挡底部导航
+              GestureDetector(
+                onTap: onToggleLanguage,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.22),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.55),
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    loc.isZh ? 'EN' : '中文',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Icon(Icons.school_rounded, color: Colors.white, size: 42),
+          const SizedBox(height: 10),
+          Text(
+            loc.title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            loc.school,
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.9),
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 帖子卡片
+class _PostCard extends StatelessWidget {
+  final AppLocalization loc;
+  final int index;
+
+  const _PostCard({required this.loc, required this.index});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 12,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: ListTile(
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        title: Text(
+          '${loc.postTitle} $index',
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            loc.postContent,
+            style: const TextStyle(color: Color(0xFF9A9A9A), fontSize: 13),
+          ),
+        ),
+        trailing: const Icon(
+          Icons.chevron_right_rounded,
+          color: Color(0xFFBFBFBF),
+        ),
+      ),
+    );
+  }
+}
+
+/// 未完成的 tab 占位页
+class _PlaceholderPage extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String hint;
+
+  const _PlaceholderPage({
+    required this.icon,
+    required this.label,
+    required this.hint,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 56, color: kBrandGold.withOpacity(0.5)),
+          const SizedBox(height: 14),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            hint,
+            style: const TextStyle(fontSize: 13, color: Color(0xFF9A9A9A)),
+          ),
+        ],
+      ),
     );
   }
 }
