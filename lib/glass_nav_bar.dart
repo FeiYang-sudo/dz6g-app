@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -40,7 +39,9 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
     with SingleTickerProviderStateMixin {
   static const double _navHeight = 66;
   static const double _indicatorHeight = 46;
-  static const Duration _duration = Duration(milliseconds: 620);
+
+  /// 滑动时长：短一点，配合线性曲线就是"干脆利落地滑过去"
+  static const Duration _duration = Duration(milliseconds: 280);
 
   late final AnimationController _controller;
 
@@ -62,15 +63,15 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
   void didUpdateWidget(covariant LiquidGlassNavBar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.currentIndex != oldWidget.currentIndex) {
-      // 以「当前落点」为起点、新索引为终点做弹簧动画
+      // 以「当前落点」为起点、新索引为终点，匀速直线滑过去
       _positionAnim = Tween<double>(
         begin: _position,
         end: widget.currentIndex.toDouble(),
       ).animate(
         CurvedAnimation(
           parent: _controller,
-          // elasticOut = 冲过头再回弹，就是"松手回弹"的手感
-          curve: Curves.elasticOut,
+          // 线性：全程匀速，不冲过头、不回弹
+          curve: Curves.linear,
         ),
       );
       _position = widget.currentIndex.toDouble();
@@ -106,23 +107,14 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
               final tabWidth = navWidth / widget.items.length;
               final t = _positionAnim.value;
 
-              // ---------- 液态拉伸形变 ----------
-              // progress 是动画原始进度 0→1。
-              // 用 sin(πt) 做"两头收、中间胀"的包络：
-              //   起点 0 → 不拉伸；中段 0.5 → 拉到最大；终点 1 → 回到原始形状。
-              // 这样滑块在飞行途中被拉长，落位时收缩回去，像一滴被甩出的液体。
-              final progress = _controller.value;
-              final stretch = 1 + 0.55 * math.sin(math.pi * progress);
-
-              final baseWidth = tabWidth * 0.66;
-              final indicatorWidth = baseWidth * stretch;
-              // 拉伸时纵向略微压扁，模拟液体体积守恒
-              final indicatorHeight = _indicatorHeight - 9 * (stretch - 1);
+              // 滑块尺寸全程不变，只改位置 —— 就是一条直线滑过去
+              final indicatorWidth = tabWidth * 0.66;
+              const indicatorHeight = _indicatorHeight;
 
               // 滑块中心对齐 tab 中心，所以左右各减半个宽度
               final center = t * tabWidth + tabWidth / 2;
               final indicatorLeft = center - indicatorWidth / 2;
-              final indicatorTop = (_navHeight - indicatorHeight) / 2;
+              const indicatorTop = (_navHeight - indicatorHeight) / 2;
 
               return SizedBox(
                 height: _navHeight,
@@ -135,13 +127,13 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
                       scrollFactor: widget.scrollFactor,
                     ),
 
-                    // ② 液态胶囊滑块 —— 放在图标"下面"当高亮底，不挡图标
+                    // ② 胶囊滑块 —— 放在图标"下面"当高亮底，不挡图标
                     Positioned(
                       left: indicatorLeft,
                       top: indicatorTop,
                       width: indicatorWidth,
                       height: indicatorHeight,
-                      child: _LiquidIndicator(stretch: stretch),
+                      child: const _LiquidIndicator(),
                     ),
 
                     // ③ 图标 + 文字（最上层，保证点击和可读性）
@@ -250,19 +242,16 @@ class _GlassBackdrop extends StatelessWidget {
 }
 
 /// ==========================================================
-/// 液态胶囊滑块
+/// 胶囊滑块（尺寸固定，只跟随动画平移）
 /// ==========================================================
 class _LiquidIndicator extends StatelessWidget {
-  final double stretch;
-
-  const _LiquidIndicator({required this.stretch});
+  const _LiquidIndicator();
 
   @override
   Widget build(BuildContext context) {
-    // 圆角跟着拉伸量一起变，保持"水滴"轮廓而不是生硬矩形平移
     return Container(
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(24 * stretch),
+        borderRadius: BorderRadius.circular(23),
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
