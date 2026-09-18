@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+
 import 'glass_nav_bar.dart';
+import 'home_page.dart';
 
 void main() => runApp(const Dz6gApp());
 
@@ -32,7 +34,7 @@ class Dz6gApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const GlassNavDemoPage(),
+      home: const CampusWallPage(),
     );
   }
 }
