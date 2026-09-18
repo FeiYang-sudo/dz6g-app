@@ -1,20 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 
+import 'auth.dart';
 import 'flarum_api.dart';
 import 'glass_nav_bar.dart';
+import 'login_page.dart';
 import 'user_avatar.dart';
 
-/// 帖子详情页：标题 + 全部楼层（首楼 + 回复）
+/// 帖子详情页：标题 + 全部楼层 + 底部回复框
 class DiscussionPage extends StatefulWidget {
   final Discussion discussion;
   final FlarumApi api;
+  final AuthStore auth;
   final bool isZh;
 
   const DiscussionPage({
     super.key,
     required this.discussion,
     required this.api,
+    required this.auth,
     this.isZh = true,
   });
 
@@ -23,24 +27,116 @@ class DiscussionPage extends StatefulWidget {
 }
 
 class _DiscussionPageState extends State<DiscussionPage> {
-  late Future<List<Post>> _future;
+  final ScrollController _scroll = ScrollController();
+  final TextEditingController _replyCtrl = TextEditingController();
+
+  List<Post>? _posts;
+  bool _loading = true;
+  bool _sending = false;
+  String? _error;
+
+  bool get _zh => widget.isZh;
 
   @override
   void initState() {
     super.initState();
-    _future = widget.api.fetchPosts(widget.discussion.id);
+    widget.auth.addListener(_onAuthChanged);
+    _load();
   }
 
-  void _reload() {
+  @override
+  void dispose() {
+    widget.auth.removeListener(_onAuthChanged);
+    _scroll.dispose();
+    _replyCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onAuthChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _load() async {
     setState(() {
-      _future = widget.api.fetchPosts(widget.discussion.id);
+      _loading = true;
+      _error = null;
     });
+    try {
+      final list = await widget.api.fetchPosts(widget.discussion.id);
+      if (!mounted) return;
+      setState(() {
+        _posts = list;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _openLogin() async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => LoginPage(auth: widget.auth, isZh: _zh),
+      ),
+    );
+    if (ok == true && mounted) setState(() {});
+  }
+
+  void _toast(String msg, {bool error = false}) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor:
+              error ? const Color(0xFFD9534F) : const Color(0xFF3C3C3C),
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+  }
+
+  Future<void> _send() async {
+    final text = _replyCtrl.text.trim();
+    if (_sending || text.isEmpty) return;
+
+    FocusScope.of(context).unfocus();
+    setState(() => _sending = true);
+    try {
+      await widget.api.createReply(
+        discussionId: widget.discussion.id,
+        content: text,
+      );
+      if (!mounted) return;
+      _replyCtrl.clear();
+      setState(() => _sending = false);
+      await _load();
+      // 滚到最底下看自己的回复
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) {
+          _scroll.animateTo(
+            _scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _sending = false);
+      _toast('$e', error: true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final d = widget.discussion;
-    final zh = widget.isZh;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF3F3F5),
@@ -56,114 +152,188 @@ class _DiscussionPageState extends State<DiscussionPage> {
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ),
-      body: FutureBuilder<List<Post>>(
-        future: _future,
-        builder: (context, snap) {
-          // 加载中
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(
-              child: CircularProgressIndicator(color: kBrandGold),
-            );
-          }
-
-          // 出错
-          if (snap.hasError) {
-            return _ErrorView(
-              message: '${snap.error}',
-              onRetry: _reload,
-              isZh: zh,
-            );
-          }
-
-          final posts = snap.data ?? const <Post>[];
-          if (posts.isEmpty) {
-            return Center(
-              child: Text(zh ? '这个帖子还没有内容' : 'No content yet'),
-            );
-          }
-
-          return RefreshIndicator(
-            color: kBrandGold,
-            onRefresh: () async {
-              _reload();
-              await _future;
-            },
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-              // 第 0 项是帖子信息条，之后才是楼层
-              itemCount: posts.length + 1,
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  return _DiscussionMeta(discussion: d, isZh: zh);
-                }
-                return _PostTile(post: posts[index - 1], isZh: zh);
-              },
-            ),
-          );
-        },
+      body: RefreshIndicator(
+        color: kBrandGold,
+        onRefresh: _load,
+        child: _buildBody(),
       ),
+      bottomNavigationBar: _replyBar(),
     );
   }
-}
 
-/// 帖子信息条：谁发的、什么时候、多少回复
-class _DiscussionMeta extends StatelessWidget {
-  final Discussion discussion;
-  final bool isZh;
-
-  const _DiscussionMeta({required this.discussion, required this.isZh});
-
-  @override
-  Widget build(BuildContext context) {
-    final d = discussion;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
+  Widget _buildBody() {
+    if (_loading) {
+      return const Center(
+        child: CircularProgressIndicator(color: kBrandGold),
+      );
+    }
+    if (_error != null) {
+      return ListView(
         children: [
-          UserAvatar(author: d.author, size: 32),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              d.author?.displayName ?? (isZh ? '匿名' : 'Anonymous'),
-              style: const TextStyle(
-                fontSize: 13.5,
-                fontWeight: FontWeight.w600,
+          Padding(
+            padding: const EdgeInsets.only(top: 110),
+            child: Column(
+              children: [
+                Icon(Icons.cloud_off_rounded,
+                    size: 46, color: Colors.black.withValues(alpha: 0.18)),
+                const SizedBox(height: 14),
+                Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 14, color: Color(0xFF8C8C8C)),
+                ),
+                const SizedBox(height: 18),
+                OutlinedButton(
+                  onPressed: _load,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: kBrandGoldDark,
+                    side: const BorderSide(color: kBrandGold),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                  ),
+                  child: Text(_zh ? '重试' : 'Retry'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    final posts = _posts ?? const <Post>[];
+    if (posts.isEmpty) {
+      return ListView(
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 120),
+            child: Center(
+              child: Text(
+                _zh ? '这个帖子还没有内容' : 'Nothing here yet',
+                style: const TextStyle(
+                    fontSize: 14, color: Color(0xFFB0B0B0)),
               ),
             ),
           ),
-          Text(
-            friendlyTime(d.createdAt, zh: isZh),
-            style: const TextStyle(fontSize: 12, color: Color(0xFFB0B0B0)),
-          ),
         ],
+      );
+    }
+
+    return ListView.builder(
+      controller: _scroll,
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 20),
+      itemCount: posts.length,
+      itemBuilder: (context, i) => _PostTile(
+        post: posts[i],
+        isOp: posts[i].number == 1,
+        zh: _zh,
+      ),
+    );
+  }
+
+  Widget _replyBar() {
+    final zh = _zh;
+
+    if (!widget.auth.isLoggedIn) {
+      return SafeArea(
+        top: false,
+        child: Container(
+          color: Colors.white,
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+          child: SizedBox(
+            height: 44,
+            child: OutlinedButton(
+              onPressed: _openLogin,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: kBrandGoldDark,
+                side: const BorderSide(color: kBrandGold),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(22),
+                ),
+              ),
+              child: Text(zh ? '登录后回复' : 'Sign in to reply'),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        color: Colors.white,
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 110),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF3F3F5),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: TextField(
+                  controller: _replyCtrl,
+                  minLines: 1,
+                  maxLines: 4,
+                  textInputAction: TextInputAction.newline,
+                  decoration: InputDecoration(
+                    hintText: zh ? '说点什么…' : 'Write a reply…',
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                    hintStyle: const TextStyle(
+                        fontSize: 14, color: Color(0xFFB0B0B0)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            IconButton(
+              onPressed: _sending ? null : _send,
+              icon: _sending
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: kBrandGold,
+                      ),
+                    )
+                  : const Icon(Icons.send_rounded, color: kBrandGoldDark),
+              tooltip: zh ? '发送' : 'Send',
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-/// 单个楼层
+/// 一层楼
 class _PostTile extends StatelessWidget {
   final Post post;
-  final bool isZh;
+  final bool isOp;
+  final bool zh;
 
-  const _PostTile({required this.post, required this.isZh});
+  const _PostTile({required this.post, required this.isOp, required this.zh});
 
   @override
   Widget build(BuildContext context) {
+    final author = post.author;
+    final name = author?.displayName ?? (zh ? '匿名' : 'Anonymous');
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -174,116 +344,93 @@ class _PostTile extends StatelessWidget {
         children: [
           Row(
             children: [
-              UserAvatar(author: post.author, size: 32),
+              UserAvatar(author: author, size: 34),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      post.author?.displayName ?? (isZh ? '匿名' : 'Anonymous'),
-                      style: const TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (isOp) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: kBrandGold.withValues(alpha: 0.16),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              '楼主',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: kBrandGoldDark,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                    const SizedBox(height: 1),
+                    const SizedBox(height: 2),
                     Text(
-                      friendlyTime(post.createdAt, zh: isZh),
+                      friendlyTime(post.createdAt, zh: zh),
                       style: const TextStyle(
-                        fontSize: 11.5,
-                        color: Color(0xFFB0B0B0),
-                      ),
+                          fontSize: 11.5, color: Color(0xFFB0B0B0)),
                     ),
                   ],
                 ),
               ),
-              // 楼层号
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF5F5F5),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  '#${post.number}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF9A9A9A),
-                  ),
-                ),
+              Text(
+                '${post.number}楼',
+                style: const TextStyle(
+                    fontSize: 11.5, color: Color(0xFFC4C4C4)),
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          // 正文：Flarum 给的是 HTML，交给 flutter_html 渲染
-          Html(data: post.contentHtml),
+          const SizedBox(height: 10),
+          Html(
+            data: post.contentHtml,
+            style: {
+              'body': Style(
+                margin: Margins.zero,
+                padding: HtmlPaddings.zero,
+                fontSize: FontSize(14.5),
+                lineHeight: const LineHeight(1.55),
+                color: const Color(0xFF2B2B2B),
+              ),
+              'a': Style(color: kBrandGoldDark),
+              'p': Style(margin: Margins.only(bottom: 6)),
+            },
+          ),
           if (post.likesCount > 0) ...[
-            const SizedBox(height: 4),
+            const SizedBox(height: 8),
             Row(
               children: [
-                const Icon(
-                  Icons.favorite_rounded,
-                  size: 13,
-                  color: Color(0xFFE0A0A0),
-                ),
-                const SizedBox(width: 4),
+                const Icon(Icons.favorite_rounded,
+                    size: 13, color: Color(0xFFE08A8A)),
+                const SizedBox(width: 3),
                 Text(
                   '${post.likesCount}',
                   style: const TextStyle(
-                    fontSize: 11.5,
-                    color: Color(0xFFB0B0B0),
-                  ),
+                      fontSize: 12, color: Color(0xFFB0B0B0)),
                 ),
               ],
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-/// 出错了：给一句人话 + 重试按钮
-class _ErrorView extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-  final bool isZh;
-
-  const _ErrorView({
-    required this.message,
-    required this.onRetry,
-    required this.isZh,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.cloud_off_rounded,
-              size: 48,
-              color: Color(0xFFCFCFCF),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 14, color: Color(0xFF8C8C8C)),
-            ),
-            const SizedBox(height: 16),
-            FilledButton(
-              onPressed: onRetry,
-              style: FilledButton.styleFrom(backgroundColor: kBrandGold),
-              child: Text(isZh ? '重试' : 'Retry'),
-            ),
-          ],
-        ),
       ),
     );
   }

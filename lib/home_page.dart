@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 
+import 'auth.dart';
+import 'compose_page.dart';
 import 'discussion_page.dart';
 import 'flarum_api.dart';
 import 'glass_nav_bar.dart';
-import 'user_avatar.dart';
+import 'post_card.dart';
+import 'profile_page.dart';
 
 /// App 主页面：底部液态玻璃导航栏 + 四个 tab
-/// 首页接的是论坛真实数据（Flarum API）
+/// 首页接的是论坛真实数据，发布/我的需要登录
 class CampusWallPage extends StatefulWidget {
   const CampusWallPage({super.key});
 
@@ -15,19 +18,15 @@ class CampusWallPage extends StatefulWidget {
 }
 
 class _CampusWallPageState extends State<CampusWallPage> {
-  static const int _pageSize = 15;
-
   final FlarumApi _api = FlarumApi();
+  late final AuthStore _auth = AuthStore(_api);
   final ScrollController _scroll = ScrollController();
 
   final List<Discussion> _items = [];
-
-  bool _loading = false; // 首次加载 / 下拉刷新
-  bool _loadingMore = false; // 上拉加载下一页
+  bool _loading = true;
+  bool _loadingMore = false;
   bool _hasMore = true;
   String? _error;
-
-  /// 0~1，传给导航栏控制玻璃的模糊强度
   double _scrollFactor = 0;
 
   int _currentIndex = 0;
@@ -35,24 +34,41 @@ class _CampusWallPageState extends State<CampusWallPage> {
 
   bool get _isZh => _locale.languageCode == 'zh';
 
+  static const int _pageSize = 15;
+
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_onScroll);
+    _auth.addListener(_onAuthChanged);
+    _auth.restore();
     _load();
   }
 
   @override
   void dispose() {
+    _auth.removeListener(_onAuthChanged);
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
   }
 
+  void _onAuthChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _toggleLanguage() {
+    setState(() {
+      _locale = _isZh ? const Locale('en', 'US') : const Locale('zh', 'CN');
+    });
+  }
+
+  // ---------------- 列表加载 ----------------
+
   void _onScroll() {
     if (!_scroll.hasClients) return;
 
-    // ① 玻璃模糊强度随滚动增强
+    // ① 玻璃模糊强度跟着滚动走
     final f = (_scroll.offset / 160).clamp(0.0, 1.0);
     if ((f - _scrollFactor).abs() > 0.02) {
       setState(() => _scrollFactor = f);
@@ -68,7 +84,6 @@ class _CampusWallPageState extends State<CampusWallPage> {
     }
   }
 
-  /// 首次加载 / 下拉刷新
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -93,7 +108,6 @@ class _CampusWallPageState extends State<CampusWallPage> {
     }
   }
 
-  /// 上拉加载下一页
   Future<void> _loadMore() async {
     setState(() => _loadingMore = true);
     try {
@@ -109,7 +123,6 @@ class _CampusWallPageState extends State<CampusWallPage> {
       });
     } catch (_) {
       if (!mounted) return;
-      // 加载更多失败不打断浏览，静默停住就好
       setState(() => _loadingMore = false);
     }
   }
@@ -120,19 +133,23 @@ class _CampusWallPageState extends State<CampusWallPage> {
         builder: (_) => DiscussionPage(
           discussion: d,
           api: _api,
+          auth: _auth,
           isZh: _isZh,
         ),
       ),
     );
   }
 
-  void _toggleLanguage() {
-    setState(() {
-      _locale = _isZh
-          ? const Locale('en', 'US')
-          : const Locale('zh', 'CN');
-    });
+  /// 发帖成功后回调：回首页 + 刷新
+  Future<void> _afterPosted() async {
+    setState(() => _currentIndex = 0);
+    if (_scroll.hasClients) {
+      _scroll.jumpTo(0);
+    }
+    await _load();
   }
+
+  // ---------------- 界面 ----------------
 
   List<NavItem> _navItems(AppLocalization loc) => [
         NavItem(label: loc.home, icon: Icons.home_rounded),
@@ -150,7 +167,6 @@ class _CampusWallPageState extends State<CampusWallPage> {
       body: Stack(
         children: [
           _buildBody(loc),
-          // 悬浮导航栏固定在最上层
           Positioned(
             left: 0,
             right: 0,
@@ -168,38 +184,49 @@ class _CampusWallPageState extends State<CampusWallPage> {
   }
 
   Widget _buildBody(AppLocalization loc) {
-    // 除了首页，其它三个 tab 还是占位页
-    if (_currentIndex != 0) {
-      final items = _navItems(loc);
-      return _PlaceholderPage(
-        icon: items[_currentIndex].icon,
-        label: items[_currentIndex].label,
-        hint: loc.emptyHint,
-      );
-    }
-
-    return RefreshIndicator(
-      color: kBrandGold,
-      onRefresh: _load,
-      child: CustomScrollView(
-        controller: _scroll,
-        slivers: [
-          SliverToBoxAdapter(
-            child: _Header(loc: loc, onToggleLanguage: _toggleLanguage),
+    switch (_currentIndex) {
+      case 2:
+        return ComposeTab(
+          auth: _auth,
+          api: _api,
+          isZh: _isZh,
+          onPosted: _afterPosted,
+        );
+      case 3:
+        return ProfileTab(auth: _auth, api: _api, isZh: _isZh);
+      case 1:
+        return _PlaceholderPage(
+          icon: Icons.explore_rounded,
+          label: loc.feed,
+          hint: _isZh ? '这个页面还在做' : 'Coming soon',
+        );
+      default:
+        return RefreshIndicator(
+          color: kBrandGold,
+          onRefresh: _load,
+          child: CustomScrollView(
+            controller: _scroll,
+            slivers: [
+              SliverToBoxAdapter(
+                child: _Header(
+                  loc: loc,
+                  isZh: _isZh,
+                  onToggleLanguage: _toggleLanguage,
+                ),
+              ),
+              ..._buildListSlivers(loc),
+            ],
           ),
-          ..._buildListSlivers(loc),
-        ],
-      ),
-    );
+        );
+    }
   }
 
   List<Widget> _buildListSlivers(AppLocalization loc) {
-    // 加载中
     if (_loading) {
       return const [
         SliverToBoxAdapter(
           child: Padding(
-            padding: EdgeInsets.only(top: 70),
+            padding: EdgeInsets.only(top: 80),
             child: Center(
               child: CircularProgressIndicator(color: kBrandGold),
             ),
@@ -208,25 +235,53 @@ class _CampusWallPageState extends State<CampusWallPage> {
       ];
     }
 
-    // 出错
     if (_error != null) {
       return [
         SliverToBoxAdapter(
-          child: _ErrorCard(message: _error!, onRetry: _load, isZh: _isZh),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 70, 24, 0),
+            child: Column(
+              children: [
+                Icon(Icons.cloud_off_rounded,
+                    size: 46, color: Colors.black.withValues(alpha: 0.18)),
+                const SizedBox(height: 14),
+                Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 14, color: Color(0xFF8C8C8C)),
+                ),
+                const SizedBox(height: 18),
+                OutlinedButton(
+                  onPressed: _load,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: kBrandGoldDark,
+                    side: const BorderSide(color: kBrandGold),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 26, vertical: 10),
+                  ),
+                  child: Text(_isZh ? '重试' : 'Retry'),
+                ),
+              ],
+            ),
+          ),
         ),
       ];
     }
 
-    // 空列表
     if (_items.isEmpty) {
       return [
         SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.only(top: 70),
+            padding: const EdgeInsets.only(top: 80),
             child: Center(
               child: Text(
                 _isZh ? '还没有人发帖，来当第一个吧' : 'No posts yet',
-                style: const TextStyle(color: Color(0xFF9A9A9A)),
+                style: const TextStyle(
+                    fontSize: 14, color: Color(0xFFB0B0B0)),
               ),
             ),
           ),
@@ -234,28 +289,23 @@ class _CampusWallPageState extends State<CampusWallPage> {
       ];
     }
 
-    // 正常列表
     return [
       SliverPadding(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
         sliver: SliverList(
           delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              final d = _items[index];
-              return _PostCard(
-                discussion: d,
-                isZh: _isZh,
-                onTap: () => _openDiscussion(d),
-              );
-            },
+            (context, index) => PostCard(
+              discussion: _items[index],
+              isZh: _isZh,
+              onTap: () => _openDiscussion(_items[index]),
+            ),
             childCount: _items.length,
           ),
         ),
       ),
-      // 底部：加载中转圈 / "到底啦"，顺便给悬浮导航栏留出 130px
       SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.only(top: 8, bottom: 130),
+          padding: const EdgeInsets.only(top: 6, bottom: 130),
           child: Center(
             child: _loadingMore
                 ? const SizedBox(
@@ -267,11 +317,9 @@ class _CampusWallPageState extends State<CampusWallPage> {
                     ),
                   )
                 : Text(
-                    _hasMore ? '' : (_isZh ? '到底啦' : 'That is all'),
+                    _hasMore ? '' : (_isZh ? '到底啦' : 'End'),
                     style: const TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFFB0B0B0),
-                    ),
+                        fontSize: 12, color: Color(0xFFB0B0B0)),
                   ),
           ),
         ),
@@ -280,264 +328,95 @@ class _CampusWallPageState extends State<CampusWallPage> {
   }
 }
 
-/// ==========================================================
-/// 顶部金色头部
-/// ==========================================================
+/// 首页顶部：校名 + 校园墙 + 中英切换
 class _Header extends StatelessWidget {
   final AppLocalization loc;
+  final bool isZh;
   final VoidCallback onToggleLanguage;
 
-  const _Header({required this.loc, required this.onToggleLanguage});
+  const _Header({
+    required this.loc,
+    required this.isZh,
+    required this.onToggleLanguage,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final topInset = MediaQuery.of(context).padding.top;
-
     return Container(
-      padding: EdgeInsets.fromLTRB(20, topInset + 12, 16, 24),
+      width: double.infinity,
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFFDCC08C), kBrandGold, kBrandGoldDark],
+          colors: [kBrandGoldDark, kBrandGold],
         ),
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(28)),
+        borderRadius: BorderRadius.only(
+          bottomLeft: Radius.circular(26),
+          bottomRight: Radius.circular(26),
+        ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Spacer(),
-              // 中英文切换放在顶部，不挡底部导航
-              GestureDetector(
-                onTap: onToggleLanguage,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.22),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.55),
-                      width: 1,
+      child: SafeArea(
+        bottom: false,
+        child: Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 22, 22, 26),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    loc.school,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12.5,
+                      letterSpacing: 0.5,
                     ),
                   ),
-                  child: Text(
-                    loc.isZh ? 'EN' : '中文',
+                  const SizedBox(height: 6),
+                  Text(
+                    loc.title,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 27,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1,
                     ),
                   ),
-                ),
+                ],
               ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          const Icon(Icons.school_rounded, color: Colors.white, size: 40),
-          const SizedBox(height: 8),
-          Text(
-            loc.title,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 25,
-              fontWeight: FontWeight.bold,
             ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            loc.school,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.9),
-              fontSize: 13,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// ==========================================================
-/// 帖子卡片（列表项）
-/// ==========================================================
-class _PostCard extends StatelessWidget {
-  final Discussion discussion;
-  final bool isZh;
-  final VoidCallback onTap;
-
-  const _PostCard({
-    required this.discussion,
-    required this.isZh,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final d = discussion;
-    final lastUser = d.lastPostedUser ?? d.author;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 12,
-              offset: const Offset(0, 3),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 标题（置顶的加个小标签）
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (d.isSticky)
-                  Container(
-                    margin: const EdgeInsets.only(right: 6, top: 2),
+            Positioned(
+              top: 12,
+              right: 12,
+              child: SafeArea(
+                bottom: false,
+                child: GestureDetector(
+                  onTap: onToggleLanguage,
+                  child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 1,
-                    ),
+                        horizontal: 11, vertical: 5),
                     decoration: BoxDecoration(
-                      color: kBrandGold.withOpacity(0.16),
-                      borderRadius: BorderRadius.circular(4),
+                      color: Colors.white.withValues(alpha: 0.22),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.45),
+                        width: 0.8,
+                      ),
                     ),
-                    child: const Text(
-                      '置顶',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: kBrandGoldDark,
+                    child: Text(
+                      isZh ? 'EN' : '中',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
-                Expanded(
-                  child: Text(
-                    d.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w600,
-                      height: 1.35,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            // 正文摘要
-            if (d.snippet.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                d.snippet,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: Color(0xFF9A9A9A),
-                  height: 1.4,
                 ),
               ),
-            ],
-
-            const SizedBox(height: 10),
-
-            // 底部：头像 + 名字 + 时间 + 回复数
-            Row(
-              children: [
-                UserAvatar(author: lastUser, size: 20),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    lastUser?.displayName ??
-                        (isZh ? '匿名' : 'Anonymous'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFF8C8C8C),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  friendlyTime(d.lastPostedAt ?? d.createdAt, zh: isZh),
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFFB0B0B0),
-                  ),
-                ),
-                const Spacer(),
-                const Icon(
-                  Icons.chat_bubble_outline_rounded,
-                  size: 13,
-                  color: Color(0xFFB0B0B0),
-                ),
-                const SizedBox(width: 3),
-                Text(
-                  '${d.commentCount}',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFFB0B0B0),
-                  ),
-                ),
-              ],
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// 列表加载失败
-class _ErrorCard extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-  final bool isZh;
-
-  const _ErrorCard({
-    required this.message,
-    required this.onRetry,
-    required this.isZh,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 60),
-      child: Column(
-        children: [
-          const Icon(
-            Icons.cloud_off_rounded,
-            size: 46,
-            color: Color(0xFFCFCFCF),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 13.5, color: Color(0xFF8C8C8C)),
-          ),
-          const SizedBox(height: 16),
-          FilledButton(
-            onPressed: onRetry,
-            style: FilledButton.styleFrom(backgroundColor: kBrandGold),
-            child: Text(isZh ? '重试' : 'Retry'),
-          ),
-        ],
       ),
     );
   }
@@ -561,16 +440,16 @@ class _PlaceholderPage extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 56, color: kBrandGold.withOpacity(0.5)),
-          const SizedBox(height: 14),
+          Icon(icon, size: 52, color: kBrandGold.withValues(alpha: 0.55)),
+          const SizedBox(height: 16),
           Text(
             label,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 6),
           Text(
             hint,
-            style: const TextStyle(fontSize: 13, color: Color(0xFF9A9A9A)),
+            style: const TextStyle(fontSize: 13, color: Color(0xFFA0A0A0)),
           ),
         ],
       ),
