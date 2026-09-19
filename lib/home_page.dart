@@ -26,6 +26,8 @@ class _CampusWallPageState extends State<CampusWallPage> {
   bool _loading = true;
   bool _loadingMore = false;
   bool _hasMore = true;
+  /// 上一页自动加载失败过，就先别再试，否则滚动事件会把请求打爆
+  bool _moreFailed = false;
   String? _error;
   double _scrollFactor = 0;
 
@@ -41,12 +43,17 @@ class _CampusWallPageState extends State<CampusWallPage> {
     super.initState();
     _scroll.addListener(_onScroll);
     _auth.addListener(_onAuthChanged);
+    // token 过期时自动退出登录，界面自己切回"去登录"
+    _api.onUnauthorized = () {
+      if (_auth.isLoggedIn) _auth.logout();
+    };
     _auth.restore();
     _load();
   }
 
   @override
   void dispose() {
+    _api.onUnauthorized = null;
     _auth.removeListener(_onAuthChanged);
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
@@ -79,16 +86,21 @@ class _CampusWallPageState extends State<CampusWallPage> {
             _scroll.position.maxScrollExtent - 400 &&
         !_loadingMore &&
         !_loading &&
+        !_moreFailed &&
         _hasMore) {
       _loadMore();
     }
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  /// [silent] = 后台悄悄刷（下拉刷新 / 从帖子页返回）：
+  /// 期间保留屏幕上已有的列表，不闪转圈；失败也不把列表擦掉。
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final list = await _api.fetchDiscussions(offset: 0, limit: _pageSize);
       if (!mounted) return;
@@ -97,10 +109,17 @@ class _CampusWallPageState extends State<CampusWallPage> {
           ..clear()
           ..addAll(list);
         _hasMore = list.length >= _pageSize;
+        _moreFailed = false;
         _loading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
+      // 屏幕上已经有帖子时，一次刷新失败不该把内容全擦掉
+      if (silent && _items.isNotEmpty) {
+        setState(() => _loading = false);
+        return;
+      }
       setState(() {
         _error = '$e';
         _loading = false;
@@ -123,12 +142,16 @@ class _CampusWallPageState extends State<CampusWallPage> {
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _loadingMore = false);
+      // 失败就先别自动往下加载了，等用户自己下拉刷新
+      setState(() {
+        _loadingMore = false;
+        _moreFailed = true;
+      });
     }
   }
 
-  void _openDiscussion(Discussion d) {
-    Navigator.of(context).push(
+  Future<void> _openDiscussion(Discussion d) async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => DiscussionPage(
           discussion: d,
@@ -138,6 +161,8 @@ class _CampusWallPageState extends State<CampusWallPage> {
         ),
       ),
     );
+    // 进帖子可能回了句，回来悄悄刷一下，让回复数和时间跟上
+    if (mounted) await _load(silent: true);
   }
 
   /// 发帖成功后回调：回首页 + 刷新
@@ -146,7 +171,7 @@ class _CampusWallPageState extends State<CampusWallPage> {
     if (_scroll.hasClients) {
       _scroll.jumpTo(0);
     }
-    await _load();
+    await _load(silent: true);
   }
 
   // ---------------- 界面 ----------------
@@ -166,7 +191,25 @@ class _CampusWallPageState extends State<CampusWallPage> {
       backgroundColor: const Color(0xFFF3F3F5),
       body: Stack(
         children: [
-          _buildBody(loc),
+          IndexedStack(
+            index: _currentIndex,
+            sizing: StackFit.expand,
+            children: [
+              _buildHomeTab(loc),
+              _PlaceholderPage(
+                icon: Icons.explore_rounded,
+                label: loc.feed,
+                hint: _isZh ? '这个页面还在做' : 'Coming soon',
+              ),
+              ComposeTab(
+                auth: _auth,
+                api: _api,
+                isZh: _isZh,
+                onPosted: _afterPosted,
+              ),
+              ProfileTab(auth: _auth, api: _api, isZh: _isZh),
+            ],
+          ),
           Positioned(
             left: 0,
             right: 0,
@@ -183,46 +226,31 @@ class _CampusWallPageState extends State<CampusWallPage> {
     );
   }
 
-  Widget _buildBody(AppLocalization loc) {
-    switch (_currentIndex) {
-      case 2:
-        return ComposeTab(
-          auth: _auth,
-          api: _api,
-          isZh: _isZh,
-          onPosted: _afterPosted,
-        );
-      case 3:
-        return ProfileTab(auth: _auth, api: _api, isZh: _isZh);
-      case 1:
-        return _PlaceholderPage(
-          icon: Icons.explore_rounded,
-          label: loc.feed,
-          hint: _isZh ? '这个页面还在做' : 'Coming soon',
-        );
-      default:
-        return RefreshIndicator(
-          color: kBrandGold,
-          onRefresh: _load,
-          child: CustomScrollView(
-            controller: _scroll,
-            slivers: [
-              SliverToBoxAdapter(
-                child: _Header(
-                  loc: loc,
-                  isZh: _isZh,
-                  onToggleLanguage: _toggleLanguage,
-                ),
-              ),
-              ..._buildListSlivers(loc),
-            ],
+  /// 首页。四个 tab 用 IndexedStack 装着——切走再切回来时，
+  /// 「发布」里写了一半的草稿还在，「我的」也不用重新加载。
+  Widget _buildHomeTab(AppLocalization loc) {
+    return RefreshIndicator(
+      color: kBrandGold,
+      onRefresh: () => _load(silent: true),
+      child: CustomScrollView(
+        controller: _scroll,
+        slivers: [
+          SliverToBoxAdapter(
+            child: _Header(
+              loc: loc,
+              isZh: _isZh,
+              onToggleLanguage: _toggleLanguage,
+            ),
           ),
-        );
-    }
+          ..._buildListSlivers(loc),
+        ],
+      ),
+    );
   }
 
   List<Widget> _buildListSlivers(AppLocalization loc) {
-    if (_loading) {
+    // 屏幕上已经有帖子时不显示转圈（下拉刷新自己有那个转圈）
+    if (_loading && _items.isEmpty) {
       return const [
         SliverToBoxAdapter(
           child: Padding(
@@ -253,7 +281,7 @@ class _CampusWallPageState extends State<CampusWallPage> {
                 ),
                 const SizedBox(height: 18),
                 OutlinedButton(
-                  onPressed: _load,
+                  onPressed: () => _load(),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: kBrandGoldDark,
                     side: const BorderSide(color: kBrandGold),

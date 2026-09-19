@@ -36,26 +36,58 @@ class _ProfileTabState extends State<ProfileTab> {
   @override
   void initState() {
     super.initState();
+    widget.auth.addListener(_onAuthChanged);
     if (widget.auth.isLoggedIn) _loadMine();
   }
 
-  Future<void> _loadMine() async {
+  @override
+  void dispose() {
+    widget.auth.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  /// 登录态一变（App 启动时恢复登录 / 刚登录 / 退出）就跟着变。
+  /// 必须监听：冷启动时 restore() 是异步的，initState 那一刻通常还没登录，
+  /// 只靠 initState 会出现"已登录但「我发的帖」一片空白"。
+  void _onAuthChanged() {
+    if (!mounted) return;
+    if (widget.auth.isLoggedIn) {
+      setState(() {});
+      if (_mine == null && !_loading) _loadMine();
+    } else {
+      setState(() {
+        _mine = null;
+        _error = null;
+      });
+    }
+  }
+
+  Future<void> _loadMine({bool silent = false}) async {
     final u = widget.auth.user;
     if (u == null) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
-      final list =
-          await widget.api.fetchDiscussions(authorId: u.id, limit: 20);
+      final list = await widget.api.fetchDiscussions(
+        authorUsername: u.username,
+        limit: 20,
+      );
       if (!mounted) return;
       setState(() {
         _mine = list;
         _loading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
+      if (silent && (_mine?.isNotEmpty ?? false)) {
+        setState(() => _loading = false);
+        return;
+      }
       setState(() {
         _error = '$e';
         _loading = false;
@@ -115,8 +147,8 @@ class _ProfileTabState extends State<ProfileTab> {
     }
   }
 
-  void _open(Discussion d) {
-    Navigator.of(context).push(
+  Future<void> _open(Discussion d) async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => DiscussionPage(
           discussion: d,
@@ -126,6 +158,8 @@ class _ProfileTabState extends State<ProfileTab> {
         ),
       ),
     );
+    // 可能在里面回了句，回来悄悄刷一下
+    if (mounted) await _loadMine(silent: true);
   }
 
   @override
@@ -146,7 +180,7 @@ class _ProfileTabState extends State<ProfileTab> {
               ? _signedOut(zh)
               : RefreshIndicator(
                   color: kBrandGold,
-                  onRefresh: _loadMine,
+                  onRefresh: () => _loadMine(silent: true),
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 130),
                     children: [
@@ -183,7 +217,7 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   List<Widget> _buildMine(bool zh) {
-    if (_loading) {
+    if (_loading && _mine == null) {
       return const [
         Padding(
           padding: EdgeInsets.only(top: 30),
@@ -209,7 +243,7 @@ class _ProfileTabState extends State<ProfileTab> {
                       fontSize: 13, color: Color(0xFF9A9A9A))),
               const SizedBox(height: 12),
               TextButton(
-                onPressed: _loadMine,
+                onPressed: () => _loadMine(),
                 child: Text(zh ? '重试' : 'Retry',
                     style: const TextStyle(color: kBrandGoldDark)),
               ),

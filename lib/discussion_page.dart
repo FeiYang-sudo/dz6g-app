@@ -56,20 +56,28 @@ class _DiscussionPageState extends State<DiscussionPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  /// [silent] = 后台悄悄刷：不闪转圈，失败也不把已经看到的楼层擦掉
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final list = await widget.api.fetchPosts(widget.discussion.id);
       if (!mounted) return;
       setState(() {
         _posts = list;
         _loading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
+      if (silent && (_posts?.isNotEmpty ?? false)) {
+        setState(() => _loading = false);
+        return;
+      }
       setState(() {
         _error = '$e';
         _loading = false;
@@ -116,7 +124,7 @@ class _DiscussionPageState extends State<DiscussionPage> {
       if (!mounted) return;
       _replyCtrl.clear();
       setState(() => _sending = false);
-      await _load();
+      await _load(silent: true);
       // 滚到最底下看自己的回复
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scroll.hasClients) {
@@ -154,7 +162,7 @@ class _DiscussionPageState extends State<DiscussionPage> {
       ),
       body: RefreshIndicator(
         color: kBrandGold,
-        onRefresh: _load,
+        onRefresh: () => _load(silent: true),
         child: _buildBody(),
       ),
       bottomNavigationBar: _replyBar(),
@@ -162,7 +170,7 @@ class _DiscussionPageState extends State<DiscussionPage> {
   }
 
   Widget _buildBody() {
-    if (_loading) {
+    if (_loading && _posts == null) {
       return const Center(
         child: CircularProgressIndicator(color: kBrandGold),
       );
@@ -185,7 +193,7 @@ class _DiscussionPageState extends State<DiscussionPage> {
                 ),
                 const SizedBox(height: 18),
                 OutlinedButton(
-                  onPressed: _load,
+                  onPressed: () => _load(),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: kBrandGoldDark,
                     side: const BorderSide(color: kBrandGold),

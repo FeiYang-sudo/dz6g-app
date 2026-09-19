@@ -54,7 +54,7 @@ class AuthStore extends ChangeNotifier {
       notifyListeners();
     } on FlarumException catch (e) {
       // 网络不通不算登录失效；只有论坛明确说"没登录"才真的退出
-      if (e.message != '连不上论坛，检查一下网络') {
+      if (!e.isNetwork) {
         await logout();
       }
     } catch (_) {
