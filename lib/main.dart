@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'doh_client.dart';
 import 'glass_nav_bar.dart';
 import 'home_page.dart';
 
-void main() => runApp(const Dz6gApp());
+void main() {
+  // 装一次即可：之后所有网络请求都用 DoH 解析真实 IP，
+  // 绕开会把本站域名污染成 0.0.0.0 的运营商 DNS（含 Image 加载头像）
+  installDohOverrides();
+  runApp(const Dz6gApp());
+}
 
 class Dz6gApp extends StatelessWidget {
   const Dz6gApp({super.key});

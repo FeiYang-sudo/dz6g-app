@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'doh_client.dart';
+
 /// 论坛接口地址（Flarum）
 const String kApiBase = 'https://dz6g.ccwu.cc/board/api';
 
@@ -259,6 +261,9 @@ class FlarumApi {
       ['CF', 'https://www.cloudflare.com/cdn-cgi/trace'],
     ];
     final out = <String>[];
+    // 先把 DoH 解析结果写进去：能拿到真实 IP 说明绕过了污染
+    final dohIps = await dohResolve('dz6g.ccwu.cc');
+    out.add('DoH=${dohIps.isEmpty ? "×" : dohIps.first}');
     for (final probe in probes) {
       try {
         final r = await _client

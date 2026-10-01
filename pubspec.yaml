@@ -2,7 +2,7 @@ name: dz6g_app
 description: 邓州六高校园墙 App
 
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.2+3
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
