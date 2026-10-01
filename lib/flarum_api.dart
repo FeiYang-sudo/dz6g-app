@@ -250,6 +250,28 @@ class FlarumApi {
     return AuthSession(token: t, user: user);
   }
 
+  /// 网络诊断：逐条探路，返回 "主站=200 IP直连=× CF=×" 这样的串。
+  /// 用途：App 连不上时，一眼看出是哪一层断了（域名/IP 被掐、还是 CF 整个不可达）。
+  Future<String> diagnose() async {
+    final probes = <List<String>>[
+      ['主站', '$baseUrl/discussions?page%5Blimit%5D=1'],
+      ['IP直连', 'http://103.236.87.220/board/api/discussions?page%5Blimit%5D=1'],
+      ['CF', 'https://www.cloudflare.com/cdn-cgi/trace'],
+    ];
+    final out = <String>[];
+    for (final probe in probes) {
+      try {
+        final r = await _client
+            .get(Uri.parse(probe[1]), headers: {'User-Agent': 'Dz6gApp/1.0'})
+            .timeout(const Duration(seconds: 6));
+        out.add('${probe[0]}=${r.statusCode}');
+      } catch (_) {
+        out.add('${probe[0]}=×');
+      }
+    }
+    return out.join(' ');
+  }
+
   /// 取某个用户资料（也用来验证 token 还有没有效）
   Future<Author> fetchUser(int id) async {
     final json = await _request('GET', Uri.parse('$baseUrl/users/$id'));
@@ -295,20 +317,36 @@ class FlarumApi {
     Map<String, dynamic>? body,
     String? authErrorMessage,
   }) async {
-    late http.Response res;
+    http.Response? res;
     final hadAuth = token != null && token!.isNotEmpty;
-    try {
-      final req = http.Request(method, uri);
-      req.headers.addAll(_headers);
-      if (body != null) {
-        req.headers['Content-Type'] = 'application/json; charset=utf-8';
-        req.bodyBytes = utf8.encode(jsonEncode(body));
+    // 手机网络偶发被重置，自动重试一次；同时把真实原因带出来，别再统一报"连不上论坛"
+    Object? lastErr;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final req = http.Request(method, uri);
+        req.headers.addAll(_headers);
+        if (body != null) {
+          req.headers['Content-Type'] = 'application/json; charset=utf-8';
+          req.bodyBytes = utf8.encode(jsonEncode(body));
+        }
+        final streamed =
+            await _client.send(req).timeout(const Duration(seconds: 20));
+        res = await http.Response.fromStream(streamed);
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 800));
+        }
       }
-      final streamed =
-          await _client.send(req).timeout(const Duration(seconds: 20));
-      res = await http.Response.fromStream(streamed);
-    } catch (_) {
-      throw const FlarumException('连不上论坛，检查一下网络', isNetwork: true);
+    }
+    if (res == null) {
+      // 探几条路，把结果一起报出来，省得猜是谁掐的
+      var diag = '';
+      try {
+        diag = await diagnose();
+      } catch (_) {}
+      throw FlarumException('连不上论坛（$lastErr）\n诊断: $diag', isNetwork: true);
     }
 
     // 先解析响应体（删除成功时是空的 204）

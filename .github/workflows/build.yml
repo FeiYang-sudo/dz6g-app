@@ -3,8 +3,12 @@ name: Build Flutter APK
 on:
   push:
     branches: [main, master]
-  pull_request:
-    branches: [main, master]
+  workflow_dispatch:
+
+# 需要写权限把 APK 推到 dl 分支（artifact 下载要 token，这台服务器没有，
+# 所以改成推回仓库，再用 raw.githubusercontent.com 取，国内可达）
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -12,6 +16,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -22,11 +32,34 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Build APK
-        run: flutter build apk --debug
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos || true
 
-      - name: Upload APK
+      - name: Build release APKs (per ABI)
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload artifact (备用)
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: apk-release
+          path: build/app/outputs/flutter-apk/*-release.apk
+
+      - name: Publish APK to dl branch
+        run: |
+          set -e
+          OUT=$(pwd)/build/app/outputs/flutter-apk
+          rm -rf /tmp/pub && mkdir -p /tmp/pub && cd /tmp/pub
+          cp "$OUT"/app-arm64-v8a-release.apk dz6g-app-arm64.apk 2>/dev/null || true
+          cp "$OUT"/app-armeabi-v7a-release.apk dz6g-app-armv7.apk 2>/dev/null || true
+          ls -lh
+          git init -q
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b dl
+          git add -A
+          git commit -q -m "APK build ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%M)"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -f -q origin dl
+          echo "pushed dl branch"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
